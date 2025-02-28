@@ -66,8 +66,20 @@ jobs:
       working-directory: openwrt/package
       run: |
         git clone ${{ github.event.inputs.plugin_source }} plugin
+        
+        # ========== 新增修复步骤 ==========
+        cd plugin/luci-app-webmia
+        sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
+          
+        # 验证Tab缩进（显示^I表示成功）
+        echo "::group::Makefile缩进检查"
+        cat -e -t -v Makefile | grep -m 3 '^\^I'
+        [ $? -eq 0 ] && echo "✅ Tab缩进验证通过" || { echo "❌ Tab缩进异常"; exit 1; }
+        echo "::endgroup::"
+        cd ..
+        # ================================
         cd plugin
-
+        
         chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
         $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
 
