@@ -68,7 +68,7 @@ jobs:
         git clone ${{ github.event.inputs.plugin_source }} plugin
         
         # ========== 新增修复步骤 ==========
-        cd plugin/luci-app-webmia
+        cd plugin
         sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
           
         # 验证Tab缩进（显示^I表示成功）
