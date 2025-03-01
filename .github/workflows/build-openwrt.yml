@@ -14,7 +14,7 @@ on:
       plugin_source:
         description: '插件源码地址'
         required: true
-        default: 'https://github.com/lj8812/luci-app-macfilter.git'
+        default: 'https://github.com/lj8812/openwrt-mac-filter.git'
 
 jobs:
   build:
