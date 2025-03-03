@@ -19,6 +19,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-20.04
+    env:
+      PLUGIN_NAME: luci-app-webrestrict
+      PLUGIN_VERSION: 1.0.0
 
     steps:
     - name: 检出代码
@@ -39,14 +42,15 @@ jobs:
     - name: 设置目标变量
       id: set_target
       run: |
-        echo "TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')" >> $GITHUB_OUTPUT
+        TARGET_DASH=$(echo ${{ github.event.inputs.target }} | tr '/' '-')
+        echo "TARGET_DASH=${TARGET_DASH}" >> $GITHUB_OUTPUT
 
     - name: 下载并解压 OpenWrt 源码
       run: |
         SDK_BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.firmware_version }}/targets/${{ github.event.inputs.target }}/"
         SDK_FILE=$(curl -s $SDK_BASE_URL | grep -oP 'openwrt-sdk-.*?-${{ steps.set_target.outputs.TARGET_DASH }}_gcc-.*?Linux-x86_64.tar.xz' | head -n 1)
         if [ -z "$SDK_FILE" ]; then
-          echo "无法找到匹配的 SDK 文件"
+          echo "::error::无法找到匹配的 SDK 文件"
           exit 1
         fi
         SDK_URL="${SDK_BASE_URL}${SDK_FILE}"
@@ -55,33 +59,47 @@ jobs:
         mkdir openwrt
         tar -xJf openwrt.tar.xz -C openwrt --strip-components 1
 
-    - name: 检查 SDK 下载
-      run: |
-        if [ ! -f openwrt.tar.xz ]; then
-          echo "SDK 下载失败"
-          exit 1
-        fi
-
     - name: 克隆插件源码
       working-directory: openwrt/package
       run: |
-        git clone ${{ github.event.inputs.plugin_source }} plugin
+        git clone --depth 1 ${{ github.event.inputs.plugin_source }} plugin
         
-        # ========== 新增修复步骤 ==========
+        # 修复Makefile格式
         cd plugin
-        sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
-          
-        # 验证Tab缩进（显示^I表示成功）
-        echo "::group::Makefile缩进检查"
-        cat -e -t -v Makefile | grep -m 3 '^\^I'
-        [ $? -eq 0 ] && echo "✅ Tab缩进验证通过" || { echo "❌ Tab缩进异常"; exit 1; }
-        echo "::endgroup::"
-        cd ..
-        # ================================
-        cd plugin
+        sed -i 's/^    /\t/' Makefile
         
-        chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
-        $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
+        # 提取插件信息
+        PLUGIN_NAME=$(grep 'PKG_NAME:=' Makefile | cut -d= -f2 | tr -d ' ')
+        PLUGIN_VERSION=$(grep 'PKG_VERSION:=' Makefile | cut -d= -f2 | tr -d ' ')
+        
+        # 清理非法字符
+        CLEAN_NAME=$(echo "${PLUGIN_NAME}" | tr -cd '[:alnum:]-_')
+        CLEAN_VERSION=$(echo "${PLUGIN_VERSION}" | tr -cd '[:alnum:]._-')
+        
+        echo "PLUGIN_NAME=${CLEAN_NAME}" >> $GITHUB_ENV
+        echo "PLUGIN_VERSION=${CLEAN_VERSION}" >> $GITHUB_ENV
+
+    - name: 生成有效标签
+      id: generate_tag
+      run: |
+        # 生成日期戳
+        DATE_STAMP=$(date +%Y%m%d)
+        # 清理固件版本号
+        CLEAN_FW_VER=$(echo "${{ github.event.inputs.firmware_version }}" | tr -cd '[:alnum:]._-')
+        # 组合标签
+        TAG_NAME="v${CLEAN_FW_VER}-${DATE_STAMP}-${PLUGIN_NAME}"
+        # 替换连续短划线
+        TAG_NAME=$(echo "${TAG_NAME}" | sed 's/--/-/g')
+        echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+
+    - name: 创建并推送标签
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        git tag -a "${{ env.TAG_NAME }}" -m "Release ${{ env.TAG_NAME }}"
+        git push origin "${{ env.TAG_NAME }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: 更新 feeds
       working-directory: openwrt
@@ -89,50 +107,41 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: 检查工作目录
-      working-directory: openwrt
-      run: |
-        pwd
-        ls -la
-
     - name: 配置 OpenWrt
       working-directory: openwrt
       run: |
-        # TARGET=$(echo "${{ github.event.inputs.target }}" | sed 's/\//\\\//g')
-        # echo "CONFIG_TARGET_${TARGET%/*}=y" > .config
-        # echo "CONFIG_TARGET_${TARGET%/*}_${TARGET#*/}=y" >> .config
-        
-        echo "CONFIG_PACKAGE_plugin=m" >> .config
+        echo "CONFIG_PACKAGE_${PLUGIN_NAME}=y" >> .config
         make defconfig
 
     - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/plugin/compile V=s
+        make package/${PLUGIN_NAME}/compile V=s
 
     - name: 整理文件
       run: |
         mkdir -p firmware
-        find openwrt/bin/packages/ -name "${{ env.PLUGIN_NAME }}*.ipk" | xargs -I {} mv {} firmware/
+        find openwrt/bin/packages/ -name "*.ipk" -exec cp {} firmware/ \;
         cd firmware
         for file in *.ipk; do
-          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}.ipk"
+          new_name="${file%.*}-${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}.ipk"
+          mv "$file" "$new_name"
         done
-        echo "生成的文件列表:"
-        ls -l
 
     - name: 创建 Release
       uses: softprops/action-gh-release@v1
       with:
         files: firmware/*
-        name: ${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
-        tag_name: v${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
+        tag_name: ${{ env.TAG_NAME }}
+        name: "${{ env.PLUGIN_NAME }} ${{ env.PLUGIN_VERSION }}"
         body: |
-          目标平台/架构: ${{ github.event.inputs.target }}
-          固件版本: ${{ github.event.inputs.firmware_version }}
-          插件源码地址: ${{ github.event.inputs.plugin_source }}
-          插件版本: ${{ env.PLUGIN_VERSION }}
+          ### 编译信息
+          - ​**目标平台**: ${{ github.event.inputs.target }}
+          - ​**固件版本**: ${{ github.event.inputs.firmware_version }}
+          - ​**编译时间**: $(date +'%Y-%m-%d %H:%M:%S')
+          - ​**源码仓库**: [${{ github.event.inputs.plugin_source }}](${{ github.event.inputs.plugin_source }})
 
-          这个 Release 包含了编译好的 OpenWrt 插件。
+          ### 文件列表
+          $(ls -1 firmware/*.ipk | sed 's/^/- `/' | sed 's/$/`/')
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
