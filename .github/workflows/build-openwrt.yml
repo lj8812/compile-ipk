@@ -59,16 +59,16 @@ jobs:
     - name: 克隆插件源码
       working-directory: openwrt/package
       run: |
-        git clone --depth 1 ${{ github.event.inputs.plugin_source }} luci-app-webrestrict
+        git clone --depth 1 ${{ github.event.inputs.plugin_source }} luci-app-macfilter
         
         # 验证目录结构
-        if [ ! -f luci-app-webrestrict/Makefile ]; then
+        if [ ! -f luci-app-macfilter/Makefile ]; then
           echo "::error::插件源码缺少Makefile文件"
           exit 1
         fi
         
         # 修复Makefile格式
-        cd luci-app-webrestrict
+        cd luci-app-macfilter
         sed -i 's/^    /\t/' Makefile
         
         # 验证关键配置
@@ -83,7 +83,7 @@ jobs:
       run: |
         DATE_STAMP=$(date +%Y%m%d)
         CLEAN_FW_VER=$(echo "${{ github.event.inputs.firmware_version }}" | tr -cd '[:alnum:]._-')
-        TAG_NAME="v${CLEAN_FW_VER}-${DATE_STAMP}-luci-app-webrestrict"
+        TAG_NAME="v${CLEAN_FW_VER}-${DATE_STAMP}-luci-app-macfilter"
         echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
 
     - name: 更新 feeds
@@ -95,13 +95,13 @@ jobs:
     - name: 配置 OpenWrt
       working-directory: openwrt
       run: |
-        echo "CONFIG_PACKAGE_luci-app-webrestrict=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-macfilter=m" >> .config
         make defconfig
 
     - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/luci-app-webrestrict/compile V=s || {
+        make package/luci-app-macfilter/compile V=s || {
           echo "::error::编译失败，查看详细日志："
           cat ./logs/package.log
           exit 1
@@ -110,7 +110,7 @@ jobs:
     - name: 整理文件
       run: |
         mkdir -p firmware
-        find openwrt/bin/packages/ -name "luci-app-webrestrict*.ipk" -exec cp {} firmware/ \;
+        find openwrt/bin/packages/ -name "luci-app-macfilter*.ipk" -exec cp {} firmware/ \;
         cd firmware
         for file in *.ipk; do
           new_name="${file%.*}-${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}.ipk"
@@ -122,7 +122,7 @@ jobs:
       with:
         files: firmware/*
         tag_name: ${{ env.TAG_NAME }}
-        name: "luci-app-webrestrict ${{ github.event.inputs.firmware_version }}"
+        name: "luci-app-macfilter ${{ github.event.inputs.firmware_version }}"
         body: |
           ### 编译信息
           - ​**目标架构**: ${{ github.event.inputs.target }}
@@ -132,7 +132,7 @@ jobs:
           ### 安装说明
           通过以下命令安装：
           ```bash
-          opkg install luci-app-webrestrict*.ipk
+          opkg install luci-app-macfilter*.ipk
           ```
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
