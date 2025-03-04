@@ -73,7 +73,7 @@ jobs:
         
         # 验证关键配置
         echo "::group::Makefile内容检查"
-        grep -q 'PKG_NAME:=luci-app-webrestrict' Makefile || { echo "::error::PKG_NAME定义错误"; exit 1; }
+        grep -q 'PKG_NAME:=luci-app-macfilter' Makefile || { echo "::error::PKG_NAME定义错误"; exit 1; }
         grep -q 'include \$(TOPDIR)/rules.mk' Makefile || { echo "::error::缺少rules.mk包含"; exit 1; }
         grep -q 'call BuildPackage' Makefile || { echo "::error::缺少BuildPackage调用"; exit 1; }
         echo "::endgroup::"
