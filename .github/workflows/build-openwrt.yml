@@ -14,7 +14,7 @@ on:
       plugin_source:
         description: '插件源码地址'
         required: true
-        default: 'https://github.com/lj8812/luci-app-webrestrict.git'
+        default: 'https://github.com/lj8812/luci-app-macfilter.git'
 
 jobs:
   build:
