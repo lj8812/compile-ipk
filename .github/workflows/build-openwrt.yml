@@ -31,23 +31,19 @@ jobs:
         gettext git java-propose-classpath libelf-dev libncurses5-dev \
         libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
         unzip wget rsync subversion swig time xsltproc zlib1g-dev tree
-
     - name: 设置 Python 软链接
       run: |
         sudo ln -sf /usr/bin/python3 /usr/bin/python
-
     - name: 设置目标变量
       id: set_target
       run: |
-        TARGET_DASH=$(echo ${{ github.event.inputs.target }} | tr '/' '-')
-        echo "TARGET_DASH=${TARGET_DASH}" >> $GITHUB_OUTPUT
-
+        echo "TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')" >> $GITHUB_OUTPUT
     - name: 下载并解压 OpenWrt 源码
       run: |
         SDK_BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.firmware_version }}/targets/${{ github.event.inputs.target }}/"
         SDK_FILE=$(curl -s $SDK_BASE_URL | grep -oP 'openwrt-sdk-.*?-${{ steps.set_target.outputs.TARGET_DASH }}_gcc-.*?Linux-x86_64.tar.xz' | head -n 1)
         if [ -z "$SDK_FILE" ]; then
-          echo "::error::无法找到匹配的 SDK 文件"
+          echo "无法找到匹配的 SDK 文件"
           exit 1
         fi
         SDK_URL="${SDK_BASE_URL}${SDK_FILE}"
@@ -55,84 +51,76 @@ jobs:
         wget $SDK_URL -O openwrt.tar.xz
         mkdir openwrt
         tar -xJf openwrt.tar.xz -C openwrt --strip-components 1
-
+    - name: 检查 SDK 下载
+      run: |
+        if [ ! -f openwrt.tar.xz ]; then
+          echo "SDK 下载失败"
+          exit 1
+        fi
     - name: 克隆插件源码
       working-directory: openwrt/package
       run: |
-        git clone --depth 1 ${{ github.event.inputs.plugin_source }} luci-app-macfilter
+        git clone ${{ github.event.inputs.plugin_source }} plugin
         
-        # 验证目录结构
-        if [ ! -f luci-app-macfilter/Makefile ]; then
-          echo "::error::插件源码缺少Makefile文件"
-          exit 1
-        fi
-        
-        # 修复Makefile格式
-        cd luci-app-macfilter
-        sed -i 's/^    /\t/' Makefile
-        
-        # 验证关键配置
-        echo "::group::Makefile内容检查"
-        grep -q 'PKG_NAME:=luci-app-macfilter' Makefile || { echo "::error::PKG_NAME定义错误"; exit 1; }
-        grep -q 'include \$(TOPDIR)/rules.mk' Makefile || { echo "::error::缺少rules.mk包含"; exit 1; }
-        grep -q 'call BuildPackage' Makefile || { echo "::error::缺少BuildPackage调用"; exit 1; }
+        # ========== 新增修复步骤 ==========
+        cd plugin
+        sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
+          
+        # 验证Tab缩进（显示^I表示成功）
+        echo "::group::Makefile缩进检查"
+        cat -e -t -v Makefile | grep -m 3 '^\^I'
+        [ $? -eq 0 ] && echo "✅ Tab缩进验证通过" || { echo "❌ Tab缩进异常"; exit 1; }
         echo "::endgroup::"
-
-    - name: 生成有效标签
-      id: generate_tag
-      run: |
-        DATE_STAMP=$(date +%Y%m%d)
-        CLEAN_FW_VER=$(echo "${{ github.event.inputs.firmware_version }}" | tr -cd '[:alnum:]._-')
-        TAG_NAME="v${CLEAN_FW_VER}-${DATE_STAMP}-luci-app-macfilter"
-        echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
-
+        cd ..
+        # ================================
+        cd plugin
+        
+        chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
+        $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
     - name: 更新 feeds
       working-directory: openwrt
       run: |
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-
+    - name: 检查工作目录
+      working-directory: openwrt
+      run: |
+        pwd
+        ls -la
     - name: 配置 OpenWrt
       working-directory: openwrt
       run: |
-        echo "CONFIG_PACKAGE_luci-app-macfilter=m" >> .config
+        # TARGET=$(echo "${{ github.event.inputs.target }}" | sed 's/\//\\\//g')
+        # echo "CONFIG_TARGET_${TARGET%/*}=y" > .config
+        # echo "CONFIG_TARGET_${TARGET%/*}_${TARGET#*/}=y" >> .config
+        
+        echo "CONFIG_PACKAGE_plugin=m" >> .config
         make defconfig
-
     - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/luci-app-macfilter/compile V=s || {
-          echo "::error::编译失败，查看详细日志："
-          cat ./logs/package.log
-          exit 1
-        }
-
+        make package/plugin/compile V=s
     - name: 整理文件
       run: |
         mkdir -p firmware
-        find openwrt/bin/packages/ -name "luci-app-macfilter*.ipk" -exec cp {} firmware/ \;
+        find openwrt/bin/packages/ -name "${{ env.PLUGIN_NAME }}*.ipk" | xargs -I {} mv {} firmware/
         cd firmware
         for file in *.ipk; do
-          new_name="${file%.*}-${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}.ipk"
-          mv "$file" "$new_name"
+          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}.ipk"
         done
-
+        echo "生成的文件列表:"
+        ls -l
     - name: 创建 Release
       uses: softprops/action-gh-release@v1
       with:
         files: firmware/*
-        tag_name: ${{ env.TAG_NAME }}
-        name: "luci-app-macfilter ${{ github.event.inputs.firmware_version }}"
+        name: ${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
+        tag_name: v${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
         body: |
-          ### 编译信息
-          - ​**目标架构**: ${{ github.event.inputs.target }}
-          - ​**固件版本**: ${{ github.event.inputs.firmware_version }}
-          - ​**编译时间**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          ### 安装说明
-          通过以下命令安装：
-          ```bash
-          opkg install luci-app-macfilter*.ipk
-          ```
+          目标平台/架构: ${{ github.event.inputs.target }}
+          固件版本: ${{ github.event.inputs.firmware_version }}
+          插件源码地址: ${{ github.event.inputs.plugin_source }}
+          插件版本: ${{ env.PLUGIN_VERSION }}
+          这个 Release 包含了编译好的 OpenWrt 插件。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
