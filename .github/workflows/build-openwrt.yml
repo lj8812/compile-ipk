@@ -14,7 +14,7 @@ on:
       plugin_source:
         description: '插件源码地址'
         required: true
-        default: 'https://github.com/lj8812/luci-app-macfilter.git'
+        default: 'https://github.com/lj8812/OpenClash.git'
 
 jobs:
   build:
@@ -60,21 +60,26 @@ jobs:
     - name: 克隆插件源码
       working-directory: openwrt/package
       run: |
-        git clone ${{ github.event.inputs.plugin_source }} plugin
-        
-        # ========== 新增修复步骤 ==========
+        # 克隆整个仓库并提取子目录
+        git clone --depth 1 --filter=blob:none --sparse ${{ github.event.inputs.plugin_source }} plugin-repo
+        cd plugin-repo
+        git sparse-checkout init --cone
+        git sparse-checkout set luci-app-openclash
+        cd ..
+        mv plugin-repo/luci-app-openclash plugin
+        rm -rf plugin-repo
+
+        # 修复Makefile缩进
         cd plugin
-        sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
-          
-        # 验证Tab缩进（显示^I表示成功）
+        sed -i 's/^    /\t/' Makefile
+
+        # 验证Tab缩进
         echo "::group::Makefile缩进检查"
         cat -e -t -v Makefile | grep -m 3 '^\^I'
         [ $? -eq 0 ] && echo "✅ Tab缩进验证通过" || { echo "❌ Tab缩进异常"; exit 1; }
         echo "::endgroup::"
-        cd ..
-        # ================================
-        cd plugin
-        
+
+        # 获取插件信息
         chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
         $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
     - name: 更新 feeds
@@ -82,31 +87,22 @@ jobs:
       run: |
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-    - name: 检查工作目录
-      working-directory: openwrt
-      run: |
-        pwd
-        ls -la
     - name: 配置 OpenWrt
       working-directory: openwrt
       run: |
-        # TARGET=$(echo "${{ github.event.inputs.target }}" | sed 's/\//\\\//g')
-        # echo "CONFIG_TARGET_${TARGET%/*}=y" > .config
-        # echo "CONFIG_TARGET_${TARGET%/*}_${TARGET#*/}=y" >> .config
-        
-        echo "CONFIG_PACKAGE_plugin=m" >> .config
+        echo "CONFIG_PACKAGE_luci-app-openclash=m" >> .config
         make defconfig
     - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/plugin/compile V=s
+        make package/feeds/packages/openclash/compile V=s
     - name: 整理文件
       run: |
         mkdir -p firmware
-        find openwrt/bin/packages/ -name "${{ env.PLUGIN_NAME }}*.ipk" | xargs -I {} mv {} firmware/
+        find openwrt/bin/packages/ -name "luci-app-openclash*.ipk" | xargs -I {} mv {} firmware/
         cd firmware
         for file in *.ipk; do
-          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}.ipk"
+          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-luci-app-openclash-${{ env.PLUGIN_VERSION }}.ipk"
         done
         echo "生成的文件列表:"
         ls -l
@@ -114,8 +110,8 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: firmware/*
-        name: ${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
-        tag_name: v${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
+        name: ${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-luci-app-openclash-${{ env.PLUGIN_VERSION }}
+        tag_name: v${{ github.event.inputs.firmware_version }}-luci-app-openclash-${{ env.PLUGIN_VERSION }}
         body: |
           目标平台/架构: ${{ github.event.inputs.target }}
           固件版本: ${{ github.event.inputs.firmware_version }}
