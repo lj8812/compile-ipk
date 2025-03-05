@@ -1,4 +1,4 @@
-name: 编译 OpenClash 插件
+name: 编译 OpenWrt 插件
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
     steps:
     - name: 检出代码
       uses: actions/checkout@v2
-
+      
     - name: 安装依赖
       run: |
         sudo apt-get update
@@ -31,17 +31,16 @@ jobs:
         gettext git java-propose-classpath libelf-dev libncurses5-dev \
         libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
         unzip wget rsync subversion swig time xsltproc zlib1g-dev tree
-
+    
     - name: 设置 Python 软链接
       run: |
         sudo ln -sf /usr/bin/python3 /usr/bin/python
-
+    
     - name: 设置目标变量
       id: set_target
       run: |
-        TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')
-        echo "TARGET_DASH=$TARGET_DASH" >> $GITHUB_OUTPUT
-
+        echo "TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')" >> $GITHUB_OUTPUT
+    
     - name: 下载并解压 OpenWrt 源码
       run: |
         SDK_BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.firmware_version }}/targets/${{ github.event.inputs.target }}/"
@@ -50,26 +49,28 @@ jobs:
         wget $SDK_URL -O openwrt.tar.xz
         mkdir openwrt
         tar -xJf openwrt.tar.xz -C openwrt --strip-components 1
-
+    
     - name: 克隆插件源码
-      working-directory: openwrt
+      working-directory: openwrt/feeds/luci
       run: |
-        mkdir -p feeds/luci/applications
-        cd feeds/luci/applications
-        git clone --depth 1 ${{ github.event.inputs.plugin_source }} luci-app-openclash
+        mkdir -p applications
+        cd applications
+        git clone --depth 1 --filter=blob:none --sparse ${{ github.event.inputs.plugin_source }} luci-app-openclash
         cd luci-app-openclash
         git sparse-checkout init --cone
         git sparse-checkout set luci-app-openclash
         sed -i 's/^    /\t/' Makefile
-        cd ../../../..
-
+        echo "::group::Makefile验证"
+        cat -e -t -v Makefile | grep -m 3 '^\^I'
+        echo "::endgroup::"
+    
     - name: 更新 feeds
       working-directory: openwrt
       run: |
         ./scripts/feeds update -a
         ./scripts/feeds install -a -p luci
-
-    - name: 配置核心依赖
+    
+    - name: 配置依赖项
       working-directory: openwrt
       run: |
         cat << EOF >> .config
@@ -84,37 +85,33 @@ jobs:
         CONFIG_PACKAGE_ca-certificates=y
         EOF
         make defconfig
-
-    - name: 验证配置
-      working-directory: openwrt
-      run: |
-        echo "当前配置文件状态："
-        grep "luci-app-openclash" .config
-        grep "dnsmasq" .config
-
+    
     - name: 编译插件
       working-directory: openwrt
       run: |
         make package/feeds/luci/luci-app-openclash/compile V=s
-
-    - name: 收集编译产物
+    
+    - name: 收集产物
       run: |
-        mkdir -p artifacts
-        find openwrt/bin -name "luci-app-openclash*.ipk" -exec cp {} artifacts/ \;
-        echo "编译产物列表："
-        ls -lh artifacts
-
+        mkdir -p firmware
+        find openwrt/bin -name "luci-app-openclash*.ipk" -exec cp {} firmware/ \;
+        cd firmware
+        for file in *.ipk; do
+          new_name="${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${file}"
+          mv "$file" "$new_name"
+        done
+        ls -lh
+    
     - name: 创建 Release
       uses: softprops/action-gh-release@v1
       with:
-        files: artifacts/*
+        files: firmware/*
         name: OpenClash-${{ github.event.inputs.firmware_version }}-${{ steps.set_target.outputs.TARGET_DASH }}
         tag_name: openclash-${{ github.event.inputs.firmware_version }}-${{ steps.set_target.outputs.TARGET_DASH }}
         body: |
-          ### 编译信息
-          目标架构：${{ github.event.inputs.target }}
-          OpenWrt版本：${{ github.event.inputs.firmware_version }}
-          源码仓库：${{ github.event.inputs.plugin_source }}
-          编译时间：$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          目标平台: ${{ github.event.inputs.target }}
+          OpenWrt版本: ${{ github.event.inputs.firmware_version }}
+          源码仓库: ${{ github.event.inputs.plugin_source }}
+          编译时间: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
