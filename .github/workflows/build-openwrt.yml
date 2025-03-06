@@ -55,23 +55,40 @@ jobs:
       run: |
         mkdir -p openwrt/feeds/luci/applications
 
-    - name: 克隆插件源码
+    - name: 克隆并重组插件源码
       working-directory: openwrt/feeds/luci/applications
       run: |
-        git clone --depth 1 --filter=blob:none --sparse "${{ github.event.inputs.plugin_source }}" luci-app-openclash
-        cd luci-app-openclash
-        git sparse-checkout init --cone
-        git sparse-checkout set luci-app-openclash package
-        if [ ! -f "Makefile" ] && [ -f "luci-app-openclash/Makefile" ]; then
-          mv luci-app-openclash/Makefile .
-        fi
-        echo "::group::文件结构验证"
-        ls -l
+        # 使用临时目录处理嵌套结构
+        git clone --depth 1 --filter=blob:none --sparse "${{ github.event.inputs.plugin_source }}" openclash-tmp
+        cd openclash-tmp
+        
+        # 精确检出必要路径
+        git sparse-checkout init --no-cone
+        git sparse-checkout set \
+            OpenClash/luci-app-openclash/Makefile \
+            OpenClash/luci-app-openclash/tools \
+            OpenClash/luci-app-openclash/root \
+            OpenClash/luci-app-openclash/po \
+            OpenClash/luci-app-openclash/luasrc
+        
+        # 重组目录结构
+        mkdir -p ../luci-app-openclash
+        rsync -av OpenClash/luci-app-openclash/ ../luci-app-openclash/ --exclude=".git"
+        
+        # 修复工具链权限
+        chmod +x ../luci-app-openclash/tools/po2lmo/po2lmo
+        cd ..
+        rm -rf openclash-tmp
+
+        # 结构验证
+        echo "::group::验证目录结构"
+        tree -L 3 luci-app-openclash
+        test -f luci-app-openclash/Makefile || exit 1
         echo "::endgroup::"
-        sed -i 's/^    /\t/' Makefile
-        echo "::group::Makefile验证"
-        cat -e -t -v Makefile | grep -m 3 '^\^I' || { echo "❌ Tab缩进修复失败"; exit 1; }
-        echo "::endgroup::"
+
+        # 修复Makefile格式
+        sed -i 's/^    /\t/g' luci-app-openclash/Makefile
+        sed -i '/^[[:space:]]*default[[:space:]]/d' luci-app-openclash/Makefile
 
     - name: 获取插件版本
       working-directory: openwrt/feeds/luci/applications/luci-app-openclash
@@ -79,10 +96,20 @@ jobs:
         PLUGIN_VERSION=$(grep 'PKG_VERSION:=' Makefile | cut -d= -f2 | tr -d ' ')
         echo "PLUGIN_VERSION=$PLUGIN_VERSION" >> $GITHUB_ENV
 
-    - name: 更新 feeds
+    - name: 修复编译系统集成
       working-directory: openwrt
       run: |
-        ./scripts/feeds update -a
+        # 强制重建符号链接
+        mkdir -p package/feeds/luci
+        ln -nfs ../../../feeds/luci/applications/luci-app-openclash package/feeds/luci/
+        
+        # 预编译工具链
+        make -C feeds/luci/applications/luci-app-openclash/tools/po2lmo
+        mkdir -p staging_dir/host/bin
+        cp feeds/luci/applications/luci-app-openclash/tools/po2lmo/po2lmo staging_dir/host/bin/
+        
+        # 更新feed索引
+        ./scripts/feeds update luci
         ./scripts/feeds install -a -p luci
 
     - name: 配置编译参数
@@ -101,10 +128,15 @@ jobs:
         EOF
         make defconfig
 
-    - name: 编译插件
+    - name: 执行编译
       working-directory: openwrt
       run: |
-        make package/feeds/luci/luci-app-openclash/compile -j$(nproc) V=s
+        make package/feeds/luci/luci-app-openclash/compile -j$(nproc) V=s || {
+          echo "⚠️ 首次编译失败，执行深度清理重试...";
+          rm -rf tmp;
+          make package/feeds/luci/luci-app-openclash/clean;
+          make package/feeds/luci/luci-app-openclash/compile -j1 V=sc;
+        }
 
     - name: 收集编译产物
       run: |
