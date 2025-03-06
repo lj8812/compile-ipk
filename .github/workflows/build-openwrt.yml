@@ -61,7 +61,13 @@ jobs:
         git clone --depth 1 --filter=blob:none --sparse "${{ github.event.inputs.plugin_source }}" luci-app-openclash
         cd luci-app-openclash
         git sparse-checkout init --cone
-        git sparse-checkout set luci-app-openclash
+        git sparse-checkout set luci-app-openclash package
+        if [ ! -f "Makefile" ] && [ -f "luci-app-openclash/Makefile" ]; then
+          mv luci-app-openclash/Makefile .
+        fi
+        echo "::group::文件结构验证"
+        ls -l
+        echo "::endgroup::"
         sed -i 's/^    /\t/' Makefile
         echo "::group::Makefile验证"
         cat -e -t -v Makefile | grep -m 3 '^\^I' || { echo "❌ Tab缩进修复失败"; exit 1; }
