@@ -14,7 +14,7 @@ on:
       plugin_source:
         description: '插件源码地址'
         required: true
-        default: 'https://github.com/lj8812/OpenClash.git'
+        default: 'https://github.com/lj8812/luci-app-staticip.git'
 
 jobs:
   build:
@@ -23,7 +23,7 @@ jobs:
     steps:
     - name: 检出代码
       uses: actions/checkout@v2
-
+      
     - name: 安装依赖
       run: |
         sudo apt-get update
@@ -31,134 +31,96 @@ jobs:
         gettext git java-propose-classpath libelf-dev libncurses5-dev \
         libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
         unzip wget rsync subversion swig time xsltproc zlib1g-dev tree
-
     - name: 设置 Python 软链接
       run: |
         sudo ln -sf /usr/bin/python3 /usr/bin/python
-
     - name: 设置目标变量
       id: set_target
       run: |
-        TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')
-        echo "TARGET_DASH=$TARGET_DASH" >> $GITHUB_OUTPUT
-
+        echo "TARGET_DASH=$(echo ${{ github.event.inputs.target }} | sed 's/\//-/')" >> $GITHUB_OUTPUT
     - name: 下载并解压 OpenWrt 源码
       run: |
         SDK_BASE_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.firmware_version }}/targets/${{ github.event.inputs.target }}/"
-        SDK_FILE=$(curl -s "$SDK_BASE_URL" | grep -oP 'openwrt-sdk-.*?-${{ steps.set_target.outputs.TARGET_DASH }}_gcc-.*?Linux-x86_64.tar.xz' | head -n1)
-        SDK_URL="$SDK_BASE_URL/$SDK_FILE"
-        wget "$SDK_URL" -O openwrt.tar.xz
-        mkdir -p openwrt
+        SDK_FILE=$(curl -s $SDK_BASE_URL | grep -oP 'openwrt-sdk-.*?-${{ steps.set_target.outputs.TARGET_DASH }}_gcc-.*?Linux-x86_64.tar.xz' | head -n 1)
+        if [ -z "$SDK_FILE" ]; then
+          echo "无法找到匹配的 SDK 文件"
+          exit 1
+        fi
+        SDK_URL="${SDK_BASE_URL}${SDK_FILE}"
+        echo "下载 SDK: $SDK_URL"
+        wget $SDK_URL -O openwrt.tar.xz
+        mkdir openwrt
         tar -xJf openwrt.tar.xz -C openwrt --strip-components 1
-
-    - name: 准备插件目录
+    - name: 检查 SDK 下载
       run: |
-        mkdir -p openwrt/feeds/luci/applications
-
-    - name: 克隆并重组插件源码
-      working-directory: openwrt/feeds/luci/applications
+        if [ ! -f openwrt.tar.xz ]; then
+          echo "SDK 下载失败"
+          exit 1
+        fi
+    - name: 克隆插件源码
+      working-directory: openwrt/package
       run: |
-        # 使用临时目录处理嵌套结构
-        git clone --depth 1 --filter=blob:none --sparse "${{ github.event.inputs.plugin_source }}" openclash-tmp
-        cd openclash-tmp
+        git clone ${{ github.event.inputs.plugin_source }} plugin
         
-        # 精确检出必要路径
-        git sparse-checkout init --no-cone
-        git sparse-checkout set \
-            OpenClash/luci-app-openclash/Makefile \
-            OpenClash/luci-app-openclash/tools \
-            OpenClash/luci-app-openclash/root \
-            OpenClash/luci-app-openclash/po \
-            OpenClash/luci-app-openclash/luasrc
-        
-        # 重组目录结构
-        mkdir -p ../luci-app-openclash
-        rsync -av OpenClash/luci-app-openclash/ ../luci-app-openclash/ --exclude=".git"
-        
-        # 修复工具链权限
-        chmod +x ../luci-app-openclash/tools/po2lmo/po2lmo
+        # ========== 新增修复步骤 ==========
+        cd plugin
+        sed -i 's/^    /\t/' Makefile  # 修复Makefile缩进
+          
+        # 验证Tab缩进（显示^I表示成功）
+        echo "::group::Makefile缩进检查"
+        cat -e -t -v Makefile | grep -m 3 '^\^I'
+        [ $? -eq 0 ] && echo "✅ Tab缩进验证通过" || { echo "❌ Tab缩进异常"; exit 1; }
+        echo "::endgroup::"
         cd ..
-        rm -rf openclash-tmp
-
-        # 结构验证
-        echo "::group::验证目录结构"
-        tree -L 3 luci-app-openclash
-        test -f luci-app-openclash/Makefile || exit 1
-        echo "::endgroup::"
-
-        # 修复Makefile格式
-        sed -i 's/^    /\t/g' luci-app-openclash/Makefile
-        sed -i '/^[[:space:]]*default[[:space:]]/d' luci-app-openclash/Makefile
-
-    - name: 获取插件版本
-      working-directory: openwrt/feeds/luci/applications/luci-app-openclash
-      run: |
-        PLUGIN_VERSION=$(grep 'PKG_VERSION:=' Makefile | cut -d= -f2 | tr -d ' ')
-        echo "PLUGIN_VERSION=$PLUGIN_VERSION" >> $GITHUB_ENV
-
-    - name: 修复编译系统集成
+        # ================================
+        cd plugin
+        
+        chmod +x $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
+        $GITHUB_WORKSPACE/.github/scripts/get_plugin_info.sh
+    - name: 更新 feeds
       working-directory: openwrt
       run: |
-        # 强制重建符号链接
-        mkdir -p package/feeds/luci
-        ln -nfs ../../../feeds/luci/applications/luci-app-openclash package/feeds/luci/
-        
-        # 预编译工具链
-        make -C feeds/luci/applications/luci-app-openclash/tools/po2lmo
-        mkdir -p staging_dir/host/bin
-        cp feeds/luci/applications/luci-app-openclash/tools/po2lmo/po2lmo staging_dir/host/bin/
-        
-        # 更新feed索引
-        ./scripts/feeds update luci
-        ./scripts/feeds install -a -p luci
-
-    - name: 配置编译参数
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+    - name: 检查工作目录
       working-directory: openwrt
       run: |
-        cat << EOF >> .config
-        CONFIG_PACKAGE_luci-app-openclash=m
-        CONFIG_PACKAGE_dnsmasq-full=y
-        CONFIG_PACKAGE_coreutils=y
-        CONFIG_PACKAGE_bash=y
-        CONFIG_PACKAGE_iptables=y
-        CONFIG_PACKAGE_luci-compat=y
-        CONFIG_PACKAGE_kmod-tun=y
-        CONFIG_PACKAGE_kmod-inet-diag=y
-        CONFIG_PACKAGE_ca-certificates=y
-        EOF
+        pwd
+        ls -la
+    - name: 配置 OpenWrt
+      working-directory: openwrt
+      run: |
+        # TARGET=$(echo "${{ github.event.inputs.target }}" | sed 's/\//\\\//g')
+        # echo "CONFIG_TARGET_${TARGET%/*}=y" > .config
+        # echo "CONFIG_TARGET_${TARGET%/*}_${TARGET#*/}=y" >> .config
+        
+        echo "CONFIG_PACKAGE_plugin=m" >> .config
         make defconfig
-
-    - name: 执行编译
+    - name: 编译插件
       working-directory: openwrt
       run: |
-        make package/feeds/luci/luci-app-openclash/compile -j$(nproc) V=s || {
-          echo "⚠️ 首次编译失败，执行深度清理重试...";
-          rm -rf tmp;
-          make package/feeds/luci/luci-app-openclash/clean;
-          make package/feeds/luci/luci-app-openclash/compile -j1 V=sc;
-        }
-
-    - name: 收集编译产物
+        make package/plugin/compile V=s
+    - name: 整理文件
       run: |
-        mkdir -p artifacts
-        find openwrt/bin -name "luci-app-openclash*.ipk" -exec cp -v {} artifacts/ \;
-        echo "::group::产物列表"
-        ls -lh artifacts
-        echo "::endgroup::"
-
+        mkdir -p firmware
+        find openwrt/bin/packages/ -name "${{ env.PLUGIN_NAME }}*.ipk" | xargs -I {} mv {} firmware/
+        cd firmware
+        for file in *.ipk; do
+          mv "$file" "${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}.ipk"
+        done
+        echo "生成的文件列表:"
+        ls -l
     - name: 创建 Release
       uses: softprops/action-gh-release@v1
       with:
-        files: artifacts/*
-        name: "OpenClash ${{ env.PLUGIN_VERSION }} - ${{ github.event.inputs.target }}"
-        tag_name: "v${{ env.PLUGIN_VERSION }}_${{ steps.set_target.outputs.TARGET_DASH }}"
+        files: firmware/*
+        name: ${{ steps.set_target.outputs.TARGET_DASH }}-${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
+        tag_name: v${{ github.event.inputs.firmware_version }}-${{ env.PLUGIN_NAME }}-${{ env.PLUGIN_VERSION }}
         body: |
-          ### 编译信息
-          - ​**目标架构**: ${{ github.event.inputs.target }}
-          - ​**固件版本**: ${{ github.event.inputs.firmware_version }}
-          - ​**源码仓库**: [${{ github.event.inputs.plugin_source }}](${{ github.event.inputs.plugin_source }})
-          - ​**编译时间**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          - ​**包含文件**:
-            $(ls artifacts | sed 's/^/- `&`/')
+          目标平台/架构: ${{ github.event.inputs.target }}
+          固件版本: ${{ github.event.inputs.firmware_version }}
+          插件源码地址: ${{ github.event.inputs.plugin_source }}
+          插件版本: ${{ env.PLUGIN_VERSION }}
+          这个 Release 包含了编译好的 OpenWrt 插件。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
